@@ -1,7 +1,6 @@
-local Players      = game:GetService("Players")
-local RunService   = game:GetService("RunService")
-local TweenService = game:GetService("TweenService")
-local VirtualUser  = game:GetService("VirtualUser")
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local TweenService     = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 
 local player    = Players.LocalPlayer
@@ -13,8 +12,9 @@ local DEFAULT_TOLERANCE = 0.35
 local SNAP_TWEEN_TIME   = 0.08
 local DOCK_ICON_SIZE    = 48
 local CREDIT            = "dev by vyv"
-local ANTIAFK_INTERVAL  = 60        -- seconds between nudges (well under Roblox's 20 min)
-local ANTIAFK_MODE      = "jump"    -- "jump" | "click" | "look"
+local ANTIAFK_INTERVAL  = 60
+local ANTIAFK_MODE      = "jump"            -- "jump" | "click" | "look"
+local ANTIAFK_HOTKEY    = Enum.KeyCode.F8   -- toggle anti-AFK from anywhere
 
 -- ============ STATE ============
 local anchorCFrame    = nil
@@ -23,6 +23,7 @@ local ENABLE_WATCHDOG = true
 local DRIFT_TOLERANCE = DEFAULT_TOLERANCE
 local minimized       = false
 local ENABLE_ANTIAFK  = true
+local afkAccum        = 0
 
 -- ============ XP LUNA PALETTE ============
 local XP = {
@@ -112,7 +113,7 @@ local screenGui = new("ScreenGui", {
 -- ============ MAIN WINDOW ============
 local window = new("Frame", {
     Name = "XPMainWindow",
-    Size = UDim2.new(0, 340, 0, 250),
+    Size = UDim2.new(0, 340, 0, 260),
     Position = UDim2.new(0, 60, 0, 60),
     BackgroundColor3 = XP.borderDark, BorderSizePixel = 0,
     Active = true, Draggable = true,
@@ -136,7 +137,7 @@ new("TextLabel", {
     TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 9,
 }, titleBar)
 
-local minBtn = makeChromeButton(titleBar, "—", Color3.fromRGB(70, 130, 220), UDim2.new(0, 22, 0, 18), UDim2.new(1, -52, 0, 4))
+local minBtn   = makeChromeButton(titleBar, "—", Color3.fromRGB(70, 130, 220), UDim2.new(0, 22, 0, 18), UDim2.new(1, -52, 0, 4))
 local closeBtn = makeChromeButton(titleBar, "×", Color3.fromRGB(210, 60, 50), UDim2.new(0, 22, 0, 18), UDim2.new(1, -26, 0, 4))
 
 local body = new("Frame", {
@@ -151,8 +152,16 @@ local statusLabel = new("TextLabel", {
     TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 8,
 }, body)
 
+local afkStatusLabel = new("TextLabel", {
+    Size = UDim2.new(1, 0, 0, 14), Position = UDim2.new(0, 0, 0, 18),
+    BackgroundTransparency = 1,
+    Text = "Anti-AFK: ON  [F8]", TextColor3 = XP.green,
+    Font = Enum.Font.SourceSans, TextSize = 11,
+    TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 8,
+}, body)
+
 local coordsLabel = new("TextLabel", {
-    Size = UDim2.new(1, 0, 0, 44), Position = UDim2.new(0, 0, 0, 22),
+    Size = UDim2.new(1, 0, 0, 44), Position = UDim2.new(0, 0, 0, 36),
     BackgroundTransparency = 1, Text = "Anchor: (none)\nLive:   (no character)",
     TextColor3 = XP.text, Font = Enum.Font.Code, TextSize = 12,
     TextXAlignment = Enum.TextXAlignment.Left,
@@ -241,12 +250,21 @@ toggleBtn.MouseButton1Click:Connect(function()
     toggleLbl.Text = "Watchdog: " .. (ENABLE_WATCHDOG and "ON" or "OFF")
 end)
 
--- anti-afk toggle
+-- anti-AFK button + shared setter
 local afkBtn, afkLbl = makeXPButton(setupBody, "Anti-AFK: ON", UDim2.new(1, 0, 0, 26), UDim2.new(0, 0, 0, 82))
-afkBtn.MouseButton1Click:Connect(function()
-    ENABLE_ANTIAFK = not ENABLE_ANTIAFK
-    afkLbl.Text = "Anti-AFK: " .. (ENABLE_ANTIAFK and "ON" or "OFF")
-end)
+
+local function setAntiAfk(enabled)
+    ENABLE_ANTIAFK = enabled
+    afkLbl.Text = "Anti-AFK: " .. (enabled and "ON" or "OFF")
+    afkStatusLabel.Text = "Anti-AFK: " .. (enabled and "ON" or "OFF") .. "  [F8]"
+    afkStatusLabel.TextColor3 = enabled and XP.green or XP.red
+end
+
+local function toggleAntiAfk()
+    setAntiAfk(not ENABLE_ANTIAFK)
+end
+
+afkBtn.MouseButton1Click:Connect(toggleAntiAfk)
 
 local clearBtn, _ = makeXPButton(setupBody, "Clear Anchor", UDim2.new(1, 0, 0, 26), UDim2.new(0, 0, 0, 114))
 clearBtn.MouseButton1Click:Connect(function()
@@ -307,12 +325,12 @@ end
 minBtn.MouseButton1Click:Connect(minimizeWindow)
 dockIcon.MouseButton1Click:Connect(restoreWindow)
 
--- ============ CLOSE = KILL LOCK ============
+-- ============ CLOSE = KILL LOCK + ANTI-AFK ============
 closeBtn.MouseButton1Click:Connect(function()
     locked = false
     anchorCFrame = nil
     ENABLE_WATCHDOG = false
-    ENABLE_ANTIAFK = false
+    setAntiAfk(false)
     window.Visible = false
     setupWindow.Visible = false
     dockIcon.Visible = false
@@ -387,7 +405,6 @@ RunService.Heartbeat:Connect(function(dt)
 end)
 
 -- ============ ANTI-AFK ============
--- Roblox kicks after ~20 min of no input. Nudge well under that.
 local function antiafkNudge()
     local char = player.Character
     if not char then return end
@@ -395,19 +412,17 @@ local function antiafkNudge()
     if not hum or hum.Health <= 0 then return end
 
     if ANTIAFK_MODE == "jump" then
-        -- gentle hop: keeps Humanoid "active" without moving far
         if hum:GetState() == Enum.HumanoidStateType.Seated then
             hum.Sit = false
         end
         hum.Jump = true
     elseif ANTIAFK_MODE == "click" then
-        -- fake a click via VirtualUser (works on most executors)
         pcall(function()
-            VirtualUser:CaptureController()
-            VirtualUser:ClickButton2(Vector2.new(0, 0))
+            local VU = game:GetService("VirtualUser")
+            VU:CaptureController()
+            VU:ClickButton2(Vector2.new(0, 0))
         end)
     elseif ANTIAFK_MODE == "look" then
-        -- tiny camera rotation — no character movement
         local cam = workspace.CurrentCamera
         if cam then
             cam.CFrame = cam.CFrame * CFrame.Angles(0, math.rad(0.1), 0)
@@ -415,7 +430,6 @@ local function antiafkNudge()
     end
 end
 
-local afkAccum = 0
 RunService.Heartbeat:Connect(function(dt)
     if not ENABLE_ANTIAFK then return end
     afkAccum += dt
@@ -425,9 +439,13 @@ RunService.Heartbeat:Connect(function(dt)
     end
 end)
 
--- reset the anti-afk timer whenever the user actually touches the game
+-- ============ INPUT: hotkey + real-input reset ============
 UserInputService.InputBegan:Connect(function(input, processed)
     if processed then return end
+    if input.KeyCode == ANTIAFK_HOTKEY then
+        toggleAntiAfk()
+        return
+    end
     if input.UserInputType == Enum.UserInputType.Keyboard
     or input.UserInputType == Enum.UserInputType.MouseButton1
     or input.UserInputType == Enum.UserInputType.MouseButton2
@@ -436,4 +454,4 @@ UserInputService.InputBegan:Connect(function(input, processed)
     end
 end)
 
-print("[PositionLocker v4] charted — dev by vyv. anti-afk: " .. ANTIAFK_MODE)
+print("[PositionLocker v5] charted — dev by vyv. anti-afk: " .. ANTIAFK_MODE .. " | hotkey: F8")
