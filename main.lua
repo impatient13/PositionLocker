@@ -1,6 +1,8 @@
 local Players      = game:GetService("Players")
 local RunService   = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
+local VirtualUser  = game:GetService("VirtualUser")
+local UserInputService = game:GetService("UserInputService")
 
 local player    = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -11,6 +13,8 @@ local DEFAULT_TOLERANCE = 0.35
 local SNAP_TWEEN_TIME   = 0.08
 local DOCK_ICON_SIZE    = 48
 local CREDIT            = "dev by vyv"
+local ANTIAFK_INTERVAL  = 60        -- seconds between nudges (well under Roblox's 20 min)
+local ANTIAFK_MODE      = "jump"    -- "jump" | "click" | "look"
 
 -- ============ STATE ============
 local anchorCFrame    = nil
@@ -18,6 +22,7 @@ local locked          = false
 local ENABLE_WATCHDOG = true
 local DRIFT_TOLERANCE = DEFAULT_TOLERANCE
 local minimized       = false
+local ENABLE_ANTIAFK  = true
 
 -- ============ XP LUNA PALETTE ============
 local XP = {
@@ -62,84 +67,37 @@ local function gradient(parent, colors, rot)
     g.Parent = parent; return g
 end
 
--- 3D bevel XP button
 local function makeXPButton(parent, text, size, pos, anchor)
     local btn = new("TextButton", {
-        Size = size,
-        Position = pos,
+        Size = size, Position = pos,
         AnchorPoint = anchor or Vector2.new(0, 0),
-        BackgroundColor3 = XP.btnFace,
-        BorderSizePixel = 0,
+        BackgroundColor3 = XP.btnFace, BorderSizePixel = 0,
         Text = "", AutoButtonColor = false,
         ClipsDescendants = true, ZIndex = 3,
     }, parent)
-
-    new("Frame", {
-        Size = UDim2.new(1, 0, 1, 0),
-        BackgroundColor3 = XP.btnShadow, BorderSizePixel = 0, ZIndex = 2,
-    }, btn)
-
-    local face = new("Frame", {
-        Size = UDim2.new(1, -2, 1, -2),
-        Position = UDim2.new(0, 1, 0, 1),
-        BackgroundColor3 = XP.btnFace, BorderSizePixel = 0, ZIndex = 3,
-    }, btn)
-
-    local highlight = new("Frame", {
-        Size = UDim2.new(1, 0, 1, 0),
-        BackgroundColor3 = XP.btnHighlight, BorderSizePixel = 0,
-        BackgroundTransparency = 0.25, ZIndex = 4,
-    }, face)
-
-    local shadow = new("Frame", {
-        Size = UDim2.new(1, 0, 0, 1), Position = UDim2.new(0, 0, 1, -1),
-        BackgroundColor3 = XP.btnShadow, BorderSizePixel = 0, ZIndex = 5,
-    }, face)
-
-    local label = new("TextLabel", {
-        Size = UDim2.new(1, 0, 1, 0),
-        BackgroundTransparency = 1,
-        Text = text, TextColor3 = XP.text,
-        Font = Enum.Font.SourceSansBold, TextSize = 13, ZIndex = 6,
-    }, face)
-
-    btn.MouseEnter:Connect(function()
-        if not btn:GetAttribute("Pressed") then face.BackgroundColor3 = XP.btnHover end
-    end)
-    btn.MouseLeave:Connect(function()
-        if not btn:GetAttribute("Pressed") then face.BackgroundColor3 = XP.btnFace end
-    end)
-    btn.MouseButton1Down:Connect(function()
-        btn:SetAttribute("Pressed", true)
-        face.BackgroundColor3 = XP.btnPress
-        highlight.Visible = false; shadow.Visible = false
-    end)
-    btn.MouseButton1Up:Connect(function()
-        btn:SetAttribute("Pressed", false)
-        face.BackgroundColor3 = XP.btnFace
-        highlight.Visible = true; shadow.Visible = true
-    end)
+    new("Frame", { Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = XP.btnShadow, BorderSizePixel = 0, ZIndex = 2 }, btn)
+    local face = new("Frame", { Size = UDim2.new(1, -2, 1, -2), Position = UDim2.new(0, 1, 0, 1), BackgroundColor3 = XP.btnFace, BorderSizePixel = 0, ZIndex = 3 }, btn)
+    local highlight = new("Frame", { Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = XP.btnHighlight, BorderSizePixel = 0, BackgroundTransparency = 0.25, ZIndex = 4 }, face)
+    local shadow = new("Frame", { Size = UDim2.new(1, 0, 0, 1), Position = UDim2.new(0, 0, 1, -1), BackgroundColor3 = XP.btnShadow, BorderSizePixel = 0, ZIndex = 5 }, face)
+    local label = new("TextLabel", { Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Text = text, TextColor3 = XP.text, Font = Enum.Font.SourceSansBold, TextSize = 13, ZIndex = 6 }, face)
+    btn.MouseEnter:Connect(function() if not btn:GetAttribute("Pressed") then face.BackgroundColor3 = XP.btnHover end end)
+    btn.MouseLeave:Connect(function() if not btn:GetAttribute("Pressed") then face.BackgroundColor3 = XP.btnFace end end)
+    btn.MouseButton1Down:Connect(function() btn:SetAttribute("Pressed", true); face.BackgroundColor3 = XP.btnPress; highlight.Visible = false; shadow.Visible = false end)
+    btn.MouseButton1Up:Connect(function() btn:SetAttribute("Pressed", false); face.BackgroundColor3 = XP.btnFace; highlight.Visible = true; shadow.Visible = true end)
     btn:SetAttribute("Pressed", false)
-
     return btn, label
 end
 
 local function makeChromeButton(parent, glyph, baseColor, size, pos)
     local b = new("TextButton", {
-        Size = size, Position = pos,
-        BackgroundColor3 = baseColor,
+        Size = size, Position = pos, BackgroundColor3 = baseColor,
         BorderSizePixel = 1, BorderColor3 = XP.borderDark,
-        Text = glyph,
-        TextColor3 = Color3.fromRGB(255, 255, 255),
+        Text = glyph, TextColor3 = Color3.fromRGB(255, 255, 255),
         Font = Enum.Font.SourceSansBold, TextSize = 14,
         AutoButtonColor = false, ZIndex = 7,
     }, parent)
     corner(b, 3)
-    new("Frame", {
-        Size = UDim2.new(1, 0, 0, 1),
-        BackgroundColor3 = Color3.fromRGB(255, 255, 255),
-        BackgroundTransparency = 0.4, BorderSizePixel = 0, ZIndex = 8,
-    }, b)
+    new("Frame", { Size = UDim2.new(1, 0, 0, 1), BackgroundColor3 = Color3.fromRGB(255, 255, 255), BackgroundTransparency = 0.4, BorderSizePixel = 0, ZIndex = 8 }, b)
     b.MouseEnter:Connect(function() b.BackgroundColor3 = baseColor:Lerp(Color3.new(1,1,1), 0.3) end)
     b.MouseLeave:Connect(function() b.BackgroundColor3 = baseColor end)
     return b
@@ -147,10 +105,8 @@ end
 
 -- ============ ROOT ============
 local screenGui = new("ScreenGui", {
-    Name = "XP_PositionLocker",
-    ResetOnSpawn = false,
-    IgnoreGuiInset = false,
-    ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+    Name = "XP_PositionLocker", ResetOnSpawn = false,
+    IgnoreGuiInset = false, ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 }, playerGui)
 
 -- ============ MAIN WINDOW ============
@@ -158,67 +114,47 @@ local window = new("Frame", {
     Name = "XPMainWindow",
     Size = UDim2.new(0, 340, 0, 250),
     Position = UDim2.new(0, 60, 0, 60),
-    BackgroundColor3 = XP.borderDark,
-    BorderSizePixel = 0,
+    BackgroundColor3 = XP.borderDark, BorderSizePixel = 0,
     Active = true, Draggable = true,
     ClipsDescendants = true, ZIndex = 5,
 }, screenGui)
+new("Frame", { Size = UDim2.new(1, -4, 1, -4), Position = UDim2.new(0, 2, 0, 2), BackgroundColor3 = XP.face, BorderSizePixel = 0, ZIndex = 6 }, window)
 
-new("Frame", {
-    Size = UDim2.new(1, -4, 1, -4), Position = UDim2.new(0, 2, 0, 2),
-    BackgroundColor3 = XP.face, BorderSizePixel = 0, ZIndex = 6,
-}, window)
-
--- title bar
 local titleBar = new("Frame", {
     Name = "TitleBar",
-    Size = UDim2.new(1, -4, 0, 26),
-    Position = UDim2.new(0, 2, 0, 2),
+    Size = UDim2.new(1, -4, 0, 26), Position = UDim2.new(0, 2, 0, 2),
     BackgroundColor3 = XP.titleMid, BorderSizePixel = 0, ZIndex = 7,
 }, window)
 corner(titleBar, 4)
 gradient(titleBar, { XP.titleTop, XP.titleMid, XP.titleBot }, 90)
-new("Frame", {
-    Size = UDim2.new(1, 0, 0, 1), Position = UDim2.new(0, 0, 1, 0),
-    BackgroundColor3 = XP.borderDark, BorderSizePixel = 0, ZIndex = 8,
-}, titleBar)
-
+new("Frame", { Size = UDim2.new(1, 0, 0, 1), Position = UDim2.new(0, 0, 1, 0), BackgroundColor3 = XP.borderDark, BorderSizePixel = 0, ZIndex = 8 }, titleBar)
 new("TextLabel", {
     Size = UDim2.new(1, -90, 1, 0), Position = UDim2.new(0, 8, 0, 0),
-    BackgroundTransparency = 1,
-    Text = "Position Locker — Setup",
+    BackgroundTransparency = 1, Text = "Position Locker — Setup",
     TextColor3 = Color3.fromRGB(255,255,255),
     Font = Enum.Font.SourceSansBold, TextSize = 13,
     TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 9,
 }, titleBar)
 
-local minBtn = makeChromeButton(titleBar, "—", Color3.fromRGB(70, 130, 220),
-    UDim2.new(0, 22, 0, 18), UDim2.new(1, -52, 0, 4))
-local closeBtn = makeChromeButton(titleBar, "×", Color3.fromRGB(210, 60, 50),
-    UDim2.new(0, 22, 0, 18), UDim2.new(1, -26, 0, 4))
+local minBtn = makeChromeButton(titleBar, "—", Color3.fromRGB(70, 130, 220), UDim2.new(0, 22, 0, 18), UDim2.new(1, -52, 0, 4))
+local closeBtn = makeChromeButton(titleBar, "×", Color3.fromRGB(210, 60, 50), UDim2.new(0, 22, 0, 18), UDim2.new(1, -26, 0, 4))
 
--- body
 local body = new("Frame", {
-    Size = UDim2.new(1, -16, 1, -80),
-    Position = UDim2.new(0, 8, 0, 34),
+    Size = UDim2.new(1, -16, 1, -80), Position = UDim2.new(0, 8, 0, 34),
     BackgroundTransparency = 1, ZIndex = 7,
 }, window)
 
 local statusLabel = new("TextLabel", {
-    Size = UDim2.new(1, 0, 0, 18),
-    BackgroundTransparency = 1,
-    Text = "Status: idle",
-    TextColor3 = XP.text,
+    Size = UDim2.new(1, 0, 0, 18), BackgroundTransparency = 1,
+    Text = "Status: idle", TextColor3 = XP.text,
     Font = Enum.Font.SourceSansBold, TextSize = 13,
     TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 8,
 }, body)
 
 local coordsLabel = new("TextLabel", {
     Size = UDim2.new(1, 0, 0, 44), Position = UDim2.new(0, 0, 0, 22),
-    BackgroundTransparency = 1,
-    Text = "Anchor: (none)\nLive:   (no character)",
-    TextColor3 = XP.text,
-    Font = Enum.Font.Code, TextSize = 12,
+    BackgroundTransparency = 1, Text = "Anchor: (none)\nLive:   (no character)",
+    TextColor3 = XP.text, Font = Enum.Font.Code, TextSize = 12,
     TextXAlignment = Enum.TextXAlignment.Left,
     TextYAlignment = Enum.TextYAlignment.Top, ZIndex = 8,
 }, body)
@@ -227,29 +163,22 @@ local buttonRow = new("Frame", {
     Size = UDim2.new(1, 0, 0, 30), Position = UDim2.new(0, 0, 1, -30),
     BackgroundTransparency = 1, ZIndex = 8,
 }, body)
+local setupBtn, _ = makeXPButton(buttonRow, "Setup", UDim2.new(0, 110, 1, 0), UDim2.new(0, 0, 0, 0))
+local setBtn, _   = makeXPButton(buttonRow, "Set",   UDim2.new(0, 110, 1, 0), UDim2.new(1, -110, 0, 0), Vector2.new(1, 0))
 
-local setupBtn, _   = makeXPButton(buttonRow, "Setup", UDim2.new(0, 110, 1, 0), UDim2.new(0, 0, 0, 0))
-local setBtn, _     = makeXPButton(buttonRow, "Set",   UDim2.new(0, 110, 1, 0), UDim2.new(1, -110, 0, 0), Vector2.new(1, 0))
-
--- status bar + credit
 local statusBar = new("Frame", {
     Size = UDim2.new(1, -4, 0, 20), Position = UDim2.new(0, 2, 1, -22),
-    BackgroundColor3 = XP.statusBg,
-    BorderSizePixel = 1, BorderColor3 = XP.borderDark, ZIndex = 7,
+    BackgroundColor3 = XP.statusBg, BorderSizePixel = 1, BorderColor3 = XP.borderDark, ZIndex = 7,
 }, window)
 new("TextLabel", {
     Size = UDim2.new(1, -80, 1, 0), Position = UDim2.new(0, 4, 0, 0),
-    BackgroundTransparency = 1,
-    Text = "Ready",
-    TextColor3 = XP.textMuted,
+    BackgroundTransparency = 1, Text = "Ready", TextColor3 = XP.textMuted,
     Font = Enum.Font.SourceSans, TextSize = 11,
     TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 8,
 }, statusBar)
 new("TextLabel", {
     Size = UDim2.new(0, 76, 1, 0), Position = UDim2.new(1, -80, 0, 0),
-    BackgroundTransparency = 1,
-    Text = CREDIT,
-    TextColor3 = XP.textMuted,
+    BackgroundTransparency = 1, Text = CREDIT, TextColor3 = XP.textMuted,
     Font = Enum.Font.SourceSansItalic, TextSize = 11,
     TextXAlignment = Enum.TextXAlignment.Right, ZIndex = 8,
 }, statusBar)
@@ -257,17 +186,13 @@ new("TextLabel", {
 -- ============ SETUP SUB-WINDOW ============
 local setupWindow = new("Frame", {
     Name = "XPSetupWindow",
-    Size = UDim2.new(0, 300, 0, 160),
+    Size = UDim2.new(0, 300, 0, 220),
     Position = UDim2.new(0, 420, 0, 60),
-    BackgroundColor3 = XP.borderDark,
-    BorderSizePixel = 0,
+    BackgroundColor3 = XP.borderDark, BorderSizePixel = 0,
     Active = true, Draggable = true,
     Visible = false, ClipsDescendants = true, ZIndex = 5,
 }, screenGui)
-new("Frame", {
-    Size = UDim2.new(1, -4, 1, -4), Position = UDim2.new(0, 2, 0, 2),
-    BackgroundColor3 = XP.face, BorderSizePixel = 0, ZIndex = 6,
-}, setupWindow)
+new("Frame", { Size = UDim2.new(1, -4, 1, -4), Position = UDim2.new(0, 2, 0, 2), BackgroundColor3 = XP.face, BorderSizePixel = 0, ZIndex = 6 }, setupWindow)
 
 local setupTitle = new("Frame", {
     Size = UDim2.new(1, -4, 0, 26), Position = UDim2.new(0, 2, 0, 2),
@@ -282,8 +207,7 @@ new("TextLabel", {
     Font = Enum.Font.SourceSansBold, TextSize = 13,
     TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 8,
 }, setupTitle)
-local setupClose = makeChromeButton(setupTitle, "×", Color3.fromRGB(210, 60, 50),
-    UDim2.new(0, 22, 0, 18), UDim2.new(1, -26, 0, 4))
+local setupClose = makeChromeButton(setupTitle, "×", Color3.fromRGB(210, 60, 50), UDim2.new(0, 22, 0, 18), UDim2.new(1, -26, 0, 4))
 
 local setupBody = new("Frame", {
     Size = UDim2.new(1, -16, 1, -52), Position = UDim2.new(0, 8, 0, 32),
@@ -292,8 +216,8 @@ local setupBody = new("Frame", {
 
 new("TextLabel", {
     Size = UDim2.new(1, 0, 0, 18), BackgroundTransparency = 1,
-    Text = "Drift tolerance (studs):",
-    TextColor3 = XP.text, Font = Enum.Font.SourceSans, TextSize = 12,
+    Text = "Drift tolerance (studs):", TextColor3 = XP.text,
+    Font = Enum.Font.SourceSans, TextSize = 12,
     TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 8,
 }, setupBody)
 
@@ -301,8 +225,8 @@ local tolBox = new("TextBox", {
     Size = UDim2.new(0, 80, 0, 22), Position = UDim2.new(0, 0, 0, 20),
     BackgroundColor3 = Color3.fromRGB(255, 255, 255),
     BorderSizePixel = 1, BorderColor3 = XP.borderDark,
-    Text = tostring(DRIFT_TOLERANCE),
-    TextColor3 = XP.text, Font = Enum.Font.Code, TextSize = 13,
+    Text = tostring(DRIFT_TOLERANCE), TextColor3 = XP.text,
+    Font = Enum.Font.Code, TextSize = 13,
     ClearTextOnFocus = false, ZIndex = 8,
 }, setupBody)
 tolBox.FocusLost:Connect(function()
@@ -311,27 +235,29 @@ tolBox.FocusLost:Connect(function()
     tolBox.Text = tostring(DRIFT_TOLERANCE)
 end)
 
-local toggleBtn, toggleLbl = makeXPButton(setupBody, "Watchdog: ON",
-    UDim2.new(1, 0, 0, 26), UDim2.new(0, 0, 0, 50))
+local toggleBtn, toggleLbl = makeXPButton(setupBody, "Watchdog: ON", UDim2.new(1, 0, 0, 26), UDim2.new(0, 0, 0, 50))
 toggleBtn.MouseButton1Click:Connect(function()
     ENABLE_WATCHDOG = not ENABLE_WATCHDOG
     toggleLbl.Text = "Watchdog: " .. (ENABLE_WATCHDOG and "ON" or "OFF")
 end)
 
-local clearBtn, _ = makeXPButton(setupBody, "Clear Anchor",
-    UDim2.new(1, 0, 0, 26), UDim2.new(0, 0, 0, 82))
+-- anti-afk toggle
+local afkBtn, afkLbl = makeXPButton(setupBody, "Anti-AFK: ON", UDim2.new(1, 0, 0, 26), UDim2.new(0, 0, 0, 82))
+afkBtn.MouseButton1Click:Connect(function()
+    ENABLE_ANTIAFK = not ENABLE_ANTIAFK
+    afkLbl.Text = "Anti-AFK: " .. (ENABLE_ANTIAFK and "ON" or "OFF")
+end)
+
+local clearBtn, _ = makeXPButton(setupBody, "Clear Anchor", UDim2.new(1, 0, 0, 26), UDim2.new(0, 0, 0, 114))
 clearBtn.MouseButton1Click:Connect(function()
     anchorCFrame = nil; locked = false
     statusLabel.Text = "Status: idle — anchor cleared"
     statusLabel.TextColor3 = XP.orange
 end)
 
--- credit line in setup window
 new("TextLabel", {
     Size = UDim2.new(1, 0, 0, 14), Position = UDim2.new(0, 0, 1, -16),
-    BackgroundTransparency = 1,
-    Text = CREDIT,
-    TextColor3 = XP.textMuted,
+    BackgroundTransparency = 1, Text = CREDIT, TextColor3 = XP.textMuted,
     Font = Enum.Font.SourceSansItalic, TextSize = 11,
     TextXAlignment = Enum.TextXAlignment.Right, ZIndex = 8,
 }, setupBody)
@@ -341,8 +267,7 @@ local dockIcon = new("TextButton", {
     Name = "XPDockIcon",
     Size = UDim2.new(0, DOCK_ICON_SIZE, 0, DOCK_ICON_SIZE),
     Position = UDim2.new(0, 8, 0.5, -DOCK_ICON_SIZE / 2),
-    BackgroundColor3 = XP.taskbar,
-    BorderSizePixel = 1, BorderColor3 = XP.borderDark,
+    BackgroundColor3 = XP.taskbar, BorderSizePixel = 1, BorderColor3 = XP.borderDark,
     Text = "", AutoButtonColor = false, Visible = false, ZIndex = 20,
 }, screenGui)
 corner(dockIcon, 6)
@@ -350,26 +275,20 @@ new("UIGradient", {
     Color = ColorSequence.new({
         ColorSequenceKeypoint.new(0, Color3.fromRGB(80, 140, 240)),
         ColorSequenceKeypoint.new(1, XP.taskbar),
-    }),
-    Rotation = 90,
+    }), Rotation = 90,
 }, dockIcon)
 new("TextLabel", {
     Size = UDim2.new(1, 0, 0, 22), Position = UDim2.new(0, 0, 0, 2),
-    BackgroundTransparency = 1,
-    Text = "PL",
+    BackgroundTransparency = 1, Text = "PL",
     TextColor3 = Color3.fromRGB(255,255,255),
-    Font = Enum.Font.SourceSansBold, TextSize = 18,
-    ZIndex = 21,
+    Font = Enum.Font.SourceSansBold, TextSize = 18, ZIndex = 21,
 }, dockIcon)
 new("TextLabel", {
     Size = UDim2.new(1, 0, 0, 12), Position = UDim2.new(0, 0, 1, -14),
-    BackgroundTransparency = 1,
-    Text = "vyv",
+    BackgroundTransparency = 1, Text = "vyv",
     TextColor3 = Color3.fromRGB(255,255,255),
-    Font = Enum.Font.SourceSansItalic, TextSize = 9,
-    ZIndex = 21,
+    Font = Enum.Font.SourceSansItalic, TextSize = 9, ZIndex = 21,
 }, dockIcon)
-
 dockIcon.MouseEnter:Connect(function() dockIcon.BackgroundColor3 = XP.taskbar:Lerp(Color3.new(1,1,1), 0.2) end)
 dockIcon.MouseLeave:Connect(function() dockIcon.BackgroundColor3 = XP.taskbar end)
 
@@ -380,13 +299,11 @@ local function minimizeWindow()
     setupWindow.Visible = false
     dockIcon.Visible = true
 end
-
 local function restoreWindow()
     minimized = false
     window.Visible = true
     dockIcon.Visible = false
 end
-
 minBtn.MouseButton1Click:Connect(minimizeWindow)
 dockIcon.MouseButton1Click:Connect(restoreWindow)
 
@@ -395,13 +312,13 @@ closeBtn.MouseButton1Click:Connect(function()
     locked = false
     anchorCFrame = nil
     ENABLE_WATCHDOG = false
+    ENABLE_ANTIAFK = false
     window.Visible = false
     setupWindow.Visible = false
     dockIcon.Visible = false
     minimized = false
-    statusLabel.Text = "Status: killed — position lock released"
+    statusLabel.Text = "Status: killed — lock released"
     statusLabel.TextColor3 = XP.red
-    task.delay(0.1, function() ENABLE_WATCHDOG = true end)
 end)
 
 -- ============ SETUP TOGGLE ============
@@ -469,4 +386,54 @@ RunService.Heartbeat:Connect(function(dt)
     end
 end)
 
-print("[PositionLocker v3] charted — dev by vyv.")
+-- ============ ANTI-AFK ============
+-- Roblox kicks after ~20 min of no input. Nudge well under that.
+local function antiafkNudge()
+    local char = player.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return end
+
+    if ANTIAFK_MODE == "jump" then
+        -- gentle hop: keeps Humanoid "active" without moving far
+        if hum:GetState() == Enum.HumanoidStateType.Seated then
+            hum.Sit = false
+        end
+        hum.Jump = true
+    elseif ANTIAFK_MODE == "click" then
+        -- fake a click via VirtualUser (works on most executors)
+        pcall(function()
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton2(Vector2.new(0, 0))
+        end)
+    elseif ANTIAFK_MODE == "look" then
+        -- tiny camera rotation — no character movement
+        local cam = workspace.CurrentCamera
+        if cam then
+            cam.CFrame = cam.CFrame * CFrame.Angles(0, math.rad(0.1), 0)
+        end
+    end
+end
+
+local afkAccum = 0
+RunService.Heartbeat:Connect(function(dt)
+    if not ENABLE_ANTIAFK then return end
+    afkAccum += dt
+    if afkAccum >= ANTIAFK_INTERVAL then
+        afkAccum = 0
+        pcall(antiafkNudge)
+    end
+end)
+
+-- reset the anti-afk timer whenever the user actually touches the game
+UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if input.UserInputType == Enum.UserInputType.Keyboard
+    or input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.MouseButton2
+    or input.UserInputType == Enum.UserInputType.Touch then
+        afkAccum = 0
+    end
+end)
+
+print("[PositionLocker v4] charted — dev by vyv. anti-afk: " .. ANTIAFK_MODE)
